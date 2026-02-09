@@ -9,6 +9,7 @@ import time
 import requests
 import google.generativeai as genai 
 from google.api_core.exceptions import ResourceExhausted
+import pytz  # <-- [UPDATE] Import Library Timezone
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(
@@ -31,7 +32,14 @@ engine = create_engine(st.secrets["DB_URL"])
 Session = sessionmaker(bind=engine)
 session = Session()
 
-# --- MODEL DATABASE (UPDATE: TAMBAH ASSET) ---
+# --- FUNGSI WAKTU WIB (BARU) ---
+# Fungsi ini memastikan waktu selalu WIB, tidak peduli server ada di mana
+def get_wib_time():
+    utc_now = datetime.now(pytz.utc)
+    wib_now = utc_now.astimezone(pytz.timezone('Asia/Jakarta'))
+    return wib_now.replace(tzinfo=None) # Hapus info timezone agar DB tidak bingung
+
+# --- MODEL DATABASE ---
 class User(Base):
     __tablename__ = 'users'
     id = Column(Integer, primary_key=True)
@@ -42,11 +50,11 @@ class User(Base):
 class Asset(Base):
     __tablename__ = 'assets'
     id = Column(Integer, primary_key=True)
-    name = Column(String(100), nullable=False) # Cth: Laptop Dell Latitude
-    category = Column(String(50), nullable=False) # Laptop/Printer/Network
+    name = Column(String(100), nullable=False)
+    category = Column(String(50), nullable=False)
     serial_number = Column(String(50), unique=True)
-    assigned_to = Column(String(50)) # User owner
-    status = Column(String(20), default='Active') # Active/Maintenance/Broken
+    assigned_to = Column(String(50)) 
+    status = Column(String(20), default='Active') 
 
 class Ticket(Base):
     __tablename__ = 'tickets'
@@ -54,15 +62,12 @@ class Ticket(Base):
     requester_name = Column(String(100), nullable=False)
     department = Column(String(50), nullable=False)
     category = Column(String(50), nullable=False)
-    
-    # RELASI KE ASSET (Opsional)
     related_asset = Column(String(100), nullable=True) 
-    
     priority = Column(String(20), nullable=False)
     subject = Column(String(200), nullable=False)
     description = Column(Text, nullable=False)
     status = Column(String(20), default='Open')
-    created_at = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.now) # Default tetap ada, tapi nanti kita override
     image_path = Column(String(200), nullable=True)
     comments = relationship('Comment', backref='ticket', cascade="all, delete-orphan")
 
@@ -102,7 +107,9 @@ def save_uploaded_file(uploadedfile):
 def calculate_sla(created_at, status):
     if status == 'Resolved':
         return "Selesai"
-    duration = datetime.now() - created_at
+    # Hitung durasi realtime
+    now_wib = get_wib_time()
+    duration = now_wib - created_at
     hours = duration.total_seconds() / 3600
     if hours < 24:
         return f"🟢 {int(hours)} Jam"
@@ -191,6 +198,9 @@ def render_chat_stream(ticket_id):
                     sender_display = f"👤 {chat.sender}" 
                     border_color = "#ddd"
                 
+                # Format Jam Chat
+                jam_chat = chat.created_at.strftime('%H:%M')
+                
                 st.markdown(
                     f"""
                     <div style='display: flex; justify-content: {align}; margin-bottom: 10px;'>
@@ -198,7 +208,7 @@ def render_chat_stream(ticket_id):
                             <div style='font-size: 0.8em; font-weight: bold; color: #555; margin-bottom: 2px;'>{sender_display}</div>
                             <div style='color: #222; font-size: 1em;'>{chat.content}</div>
                             <div style='font-size: 0.7em; color: gray; text-align: right; margin-top: 5px;'>
-                                {chat.created_at.strftime('%H:%M')}
+                                {jam_chat}
                             </div>
                         </div>
                     </div>
@@ -216,11 +226,10 @@ def show_ticket_detail(ticket, is_admin=False):
         prio_color = "red" if ticket.priority in ['High', 'Critical'] else "blue"
         st.markdown(f"**Prioritas:** :{prio_color}[{ticket.priority}] | **Kategori:** {ticket.category}")
         
-        # Tampilkan Aset Terkait
         if ticket.related_asset:
              st.markdown(f"📦 **Aset Bermasalah:** `{ticket.related_asset}`")
 
-        # --- FITUR AI (VERSI LITE & ANTI CRASH) ---
+        # --- FITUR AI ---
         if is_admin and "GOOGLE_API_KEY" in st.secrets:
             with st.expander("🤖 AI Assistant (Saran Solusi)", expanded=False):
                 st.info("Klik tombol di bawah untuk meminta saran teknis dari AI.")
@@ -264,27 +273,29 @@ def show_ticket_detail(ticket, is_admin=False):
     st.markdown("### 💬 Live Chat Support")
     render_chat_stream(ticket.id)
 
-    # QUICK REPLY
+    # QUICK REPLY (WIB ENABLED)
     if is_admin:
         st.markdown("⚡ **Balasan Cepat:**")
         qc1, qc2, qc3 = st.columns(3)
+        
+        # [UPDATE] Menambahkan created_at=get_wib_time() di setiap tombol
         if qc1.button("✅ Akan Dicek", key=f"qr1_{ticket.id}", use_container_width=True):
-            new_comment = Comment(ticket_id=ticket.id, sender="Admin", content="Baik, laporan diterima. Sedang kami cek.")
+            new_comment = Comment(ticket_id=ticket.id, sender="Admin", content="Baik, laporan diterima. Sedang kami cek.", created_at=get_wib_time())
             session.add(new_comment)
             session.commit()
             st.rerun()
         if qc2.button("🔄 Restart", key=f"qr2_{ticket.id}", use_container_width=True):
-            new_comment = Comment(ticket_id=ticket.id, sender="Admin", content="Mohon restart perangkat Anda terlebih dahulu.")
+            new_comment = Comment(ticket_id=ticket.id, sender="Admin", content="Mohon restart perangkat Anda terlebih dahulu.", created_at=get_wib_time())
             session.add(new_comment)
             session.commit()
             st.rerun()
         if qc3.button("👍 Selesai", key=f"qr3_{ticket.id}", use_container_width=True):
-            new_comment = Comment(ticket_id=ticket.id, sender="Admin", content="Masalah selesai. Tiket ditutup.")
+            new_comment = Comment(ticket_id=ticket.id, sender="Admin", content="Masalah selesai. Tiket ditutup.", created_at=get_wib_time())
             session.add(new_comment)
             session.commit()
             st.rerun()
 
-    # FORM CHAT
+    # FORM CHAT (WIB ENABLED)
     with st.form(key=f"chat_form_{ticket.id}", clear_on_submit=True):
         col_input, col_btn = st.columns([4, 1])
         with col_input:
@@ -295,7 +306,9 @@ def show_ticket_detail(ticket, is_admin=False):
         
         if btn_send and user_msg:
             sender_name = "Admin" if is_admin else ticket.requester_name 
-            new_comment = Comment(ticket_id=ticket.id, sender=sender_name, content=user_msg)
+            
+            # [UPDATE] Tambahkan created_at=get_wib_time()
+            new_comment = Comment(ticket_id=ticket.id, sender=sender_name, content=user_msg, created_at=get_wib_time())
             session.add(new_comment)
             session.commit()
             
@@ -356,14 +369,14 @@ def user_dashboard():
             
             if submit and name and subject and desc:
                 img_path = save_uploaded_file(uploaded_file) if uploaded_file else None
-                
-                # Bersihkan string aset
                 final_asset = selected_asset_str if selected_asset_str != "- Tidak Ada / Perangkat Umum -" else None
 
+                # [UPDATE] Tambahkan created_at=get_wib_time()
                 new_ticket = Ticket(
                     requester_name=name, department=dept, category=cat, priority=prio,
                     subject=subject, description=desc, image_path=img_path,
-                    related_asset=final_asset # Simpan aset
+                    related_asset=final_asset,
+                    created_at=get_wib_time() # <-- JAM WIB
                 )
                 session.add(new_ticket)
                 session.commit()
@@ -398,7 +411,7 @@ def user_dashboard():
             else:
                 st.error("Tiket tidak ditemukan.")
 
-# 3. HALAMAN ADMIN (UPDATE: MANAJEMEN ASET)
+# 3. HALAMAN ADMIN
 def admin_dashboard():
     st.sidebar.title("🛠️ Admin Panel")
     menu = st.sidebar.radio("Navigasi", ["📊 Dashboard", "📋 Manajemen Tiket", "📦 Manajemen Aset", "🚪 Logout"])
@@ -410,14 +423,13 @@ def admin_dashboard():
     elif menu == "📦 Manajemen Aset":
         st.title("📦 Inventaris Aset IT")
         
-        # Form Tambah Aset
         with st.expander("➕ Tambah Aset Baru"):
             with st.form("add_asset"):
                 c1, c2 = st.columns(2)
-                a_name = c1.text_input("Nama Perangkat (Cth: Laptop Dell)")
-                a_sn = c2.text_input("Serial Number (Harus Unik)")
+                a_name = c1.text_input("Nama Perangkat")
+                a_sn = c2.text_input("Serial Number")
                 a_cat = c1.selectbox("Kategori", ["Laptop", "PC", "Printer", "Network", "Server", "Mobile"])
-                a_user = c2.text_input("Dipegang Oleh (User)")
+                a_user = c2.text_input("Dipegang Oleh")
                 if st.form_submit_button("Simpan Aset"):
                     if a_name and a_sn:
                         try:
@@ -427,17 +439,15 @@ def admin_dashboard():
                             st.success("Aset berhasil ditambahkan!")
                             st.rerun()
                         except:
-                            st.error("Gagal simpan (Serial Number mungkin duplikat).")
+                            st.error("Gagal simpan (SN mungkin duplikat).")
                     else:
-                        st.warning("Nama dan SN wajib diisi.")
+                        st.warning("Data wajib diisi.")
 
-        # Tabel Aset
         assets = session.query(Asset).all()
         if assets:
             data_asset = [{"ID": a.id, "Nama": a.name, "SN": a.serial_number, "Kategori": a.category, "User": a.assigned_to, "Status": a.status} for a in assets]
             st.dataframe(pd.DataFrame(data_asset), use_container_width=True)
             
-            # Hapus Aset
             del_id = st.number_input("Hapus ID Aset", min_value=1, step=1)
             if st.button("Hapus Aset"):
                 a_del = session.query(Asset).get(del_id)
@@ -508,7 +518,6 @@ def admin_dashboard():
         else:
             st.info("Tidak ada tiket.")
 
-        # REPORT EXCEL (Simplified for brevity)
         if st.sidebar.button("📥 Download Report (Resolved)"):
              resolved_tickets = session.query(Ticket).filter(Ticket.status == 'Resolved').all()
              if resolved_tickets:
@@ -516,8 +525,28 @@ def admin_dashboard():
                      'ID': t.id, 'Pelapor': t.requester_name, 'Aset': t.related_asset,
                      'Masalah': t.subject, 'Solusi': t.description
                  } for t in resolved_tickets])
-                 # (Code Excel sama kayak sebelumnya, dipersingkat di sini biar muat)
-                 st.sidebar.success("Fitur Export Excel Aktif!")
+                 from io import BytesIO
+                 output = BytesIO()
+                 with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df_export.to_excel(writer, index=False, sheet_name='Laporan Resolved')
+                    worksheet = writer.sheets['Laporan Resolved']
+                    for column in worksheet.columns:
+                        max_length = 0
+                        column_letter = column[0].column_letter
+                        for cell in column:
+                            try:
+                                if len(str(cell.value)) > max_length:
+                                    max_length = len(str(cell.value))
+                            except: pass
+                        adjusted_width = (max_length + 2) * 1.2
+                        worksheet.column_dimensions[column_letter].width = adjusted_width
+                 excel_data = output.getvalue()
+                 st.sidebar.download_button(
+                    label="📄 Simpan Laporan", data=excel_data,
+                    file_name=f"Laporan_Resolved_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                 st.sidebar.success("File Siap!")
 
 # --- MAIN APP ROUTING ---
 if st.session_state.logged_in:
