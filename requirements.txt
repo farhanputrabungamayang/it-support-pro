@@ -1,0 +1,8 @@
+streamlit
+pandas
+sqlalchemy
+passlib
+requests
+google-generativeai
+openpyxl
+psycopg2-binary

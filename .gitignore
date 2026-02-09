@@ -1,0 +1,20 @@
+# --- File Rahasia (JANGAN DIHAPUS) ---
+.streamlit/secrets.toml
+secrets.toml
+.env
+
+# --- Database & User Data ---
+*.db
+instance/
+uploads/
+database_chat.csv
+
+# --- File Sampah Python ---
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# --- System Files ---
+.DS_Store
+Thumbs.db
